@@ -18,75 +18,69 @@ pub fn new_prime(bit_length: u64) -> BigUint {
     }
 }
 
-pub fn is_prime(candidate: &BigUint) -> bool {
+pub fn is_prime(number: &BigUint) -> bool {
     let mut rng = rand::thread_rng();
-    candidate != &BigUint::ZERO ||
-        candidate != &BigUint::from(2u8) ||
-        !candidate.is_even() ||
-        divide_small_primes(candidate) ||
-        fermat(&mut rng, candidate) ||
-        miller_rabin(&mut rng, candidate, MILLER_RABIN_ROUNDS)
+    !(
+        number == &BigUint::ZERO ||
+        number == &BigUint::from(2u8) ||
+        number.is_even() ||
+        divide_small_primes(number) ||
+        !fermat(&mut rng, number) ||
+        miller_rabin(&mut rng, number, MILLER_RABIN_ROUNDS)
+    )
 
 }
 
+// Returns true if not prime
 fn divide_small_primes(number: &BigUint) -> bool {
-    for i in SMALL_PRIMES.iter() {
-        if number % &BigUint::from(*i) == BigUint::ZERO {
-            return false
-        }
-    }
-    true
+    SMALL_PRIMES
+        .iter()
+        .map(|i| {
+            number % &BigUint::from(*i) == BigUint::ZERO
+        })
+    .any(|i| i)
 }
 
-fn fermat(rng: &mut ThreadRng, candidate: &BigUint) -> bool {
-    let random = rng.gen_biguint_below(candidate);
-    let exponent = candidate - BigUint::from(1u8);
-    let result = modular_pow(&random, &exponent, candidate);
+// Returns false if not prime with a single test
+fn fermat(rng: &mut ThreadRng, number: &BigUint) -> bool {
+    let random = rng.gen_biguint_below(number);
+    let exponent = number - BigUint::from(1u8);
+    let result = modular_pow(&random, &exponent, number);
     result == BigUint::from(1u8)
 }
 
+// Returns false if not prime
+fn miller_rabin(rng: &mut ThreadRng, number: &BigUint, rounds: usize) -> bool {
+    let one_under = number - &BigUint::from(1u8);
+    let mut s = 0;
+    let mut d = one_under.clone();
+    while d.is_even() {
+        d /= &BigUint::from(2u8);
+        s += 1;
+    }
 
+    // assert_eq!(&one_under, &(&BigUint::from(2u8).pow(s) * &d));
 
-// needs to be fixed
-fn miller_rabin(rng: &mut ThreadRng, candidate: &BigUint, limit: usize) -> bool {
-    let (d, s) = rewrite(candidate);
-    let step = (s - &BigUint::from(1u8)).to_usize().unwrap();
-
-    for _ in 0..limit {
-        let a = rng.gen_biguint_range(&BigUint::from(2u8), &(candidate - &BigUint::from(1u8)));
-        let mut x = modular_pow(&a, &d, candidate);
-        if x == BigUint::from(1u8) || x == (candidate - &BigUint::from(1u8)) {
-            continue
+    for _ in 0..rounds {
+        let a = rng.gen_biguint_range(
+            &BigUint::from(2u8),
+            &one_under
+        );
+        let mut x = modular_pow(&a, &d, number);
+        if &x == &BigUint::from(1u8) && &x == &one_under {
+            continue;
         }
-        else {
-            let mut break_early = false;
-            for _ in 0..step {
-                x = modular_pow(&x, &BigUint::from(2u8), candidate);
-                if x == BigUint::from(1u8) {
-                    return false
-                }
-                else if x == (candidate - &BigUint::from(1u8)) {
-                    break_early = true;
-                    break;
-                }
+        for _ in 0..s {
+            let y = modular_pow(&x, &BigUint::from(2u8), number);
+            if &y == &BigUint::from(1u8) {
+                return false;
             }
-            if !break_early {
-                return false
-            }
+            x = y;
+        }
+        if &x != &BigUint::from(1u8) {
+            return false;
         }
     }
     true
 }
 
-fn rewrite(n: &BigUint) -> (BigUint,BigUint) {
-    let one: BigUint = BigUint::from(1u8);
-    let mut s: BigUint = BigUint::ZERO;
-    let mut d: BigUint = n - &one;
-
-    while d.is_even() {
-        d = d.div_floor(&BigUint::from(2u8));
-        s += &one;
-    }
-
-    (d.clone(), s)
-}

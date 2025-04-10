@@ -58,7 +58,17 @@ pub fn modular_inverse(e: &BigInt, phi: &BigInt) -> BigUint {
     while inverse < BigInt::ZERO {
         inverse += phi;
     }
-    ma::assert_ge!(inverse, BigInt::ZERO);
+    // ma::assert_ge!(inverse, BigInt::ZERO);
     inverse.to_biguint().unwrap()
 }
+
+
+// pub fn modular_inverse(e: &BigInt, phi: &BigInt) -> BigUint {
+//     let (_, x, _) = xgcd(&e, &phi);
+//     let mut inverse = x % phi;
+//     while inverse.is_negative() {
+//         inverse += phi;
+//     }
+//     inverse.to_biguint().unwrap()
+// }
 

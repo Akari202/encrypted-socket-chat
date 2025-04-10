@@ -11,7 +11,7 @@ use num::bigint::{RandBigInt, ToBigInt};
 use num::{BigUint, ToPrimitive};
 use rand::prelude::ThreadRng;
 
-#[derive(Debug, PartialEq, Clone)]
+#[derive(Debug, PartialEq, Clone, Eq)]
 pub struct Key {
     exponent: BigUint,
     modulus: BigUint,
@@ -44,24 +44,52 @@ impl Key {
         trace!("Input: {:b}", &input);
         let input = (input << self.salt_bits) | salt;
         trace!("Salted value: {:b}", &input);
-        modular_pow(&input, &self.exponent, &self.modulus)
+        // modular_pow(&input, &self.exponent, &self.modulus)
+        input.modpow(&self.exponent, &self.modulus)
+    }
+
+    pub fn encrypt_sequence(&self, rng: &mut ThreadRng, input: &[u8]) -> Vec<BigUint> {
+        input.iter().map(|i| {
+            self.encrypt(rng, *i)
+        }).collect()
+    }
+
+    pub fn encrypt_string(&self, rng: &mut ThreadRng, input: &str) -> Vec<BigUint> {
+        input.chars().map(|i| {
+            self.encrypt(rng, i as u8)
+        }).collect()
     }
 
     pub fn decrypt(&self, input: &BigUint) -> Result<u8, Box<dyn Error>> {
-        trace!("Running decrypt");
-        let decrypted = modular_pow(input, &self.exponent, &self.modulus);
+        trace!("Running decrypt: {}", input);
+        // let decrypted = modular_pow(input, &self.exponent, &self.modulus);
+        let decrypted = input.modpow(&self.exponent, &self.modulus);
         trace!("Salted decrypted: {}", &decrypted);
         let desalted = (&decrypted >> self.salt_bits).to_u8();
         match desalted {
             None => {
-                error!("Could not decrypt.\nInput: {}\nDecrypted: {:b}", &input, &decrypted);
+                error!("Could not decrypt.\nInput: {}\nDecrypted: {}", &input, &decrypted);
                 Err("Decryption failed".into())
             }
             Some(desalted) => {
+                trace!("Unsalted decrypted: {}", &desalted);
                 Ok(desalted)
             }
         }
     }
+
+    pub fn decrypt_sequence(&self, input: &[BigUint]) -> Result<Vec<u8>, Box<dyn Error>> {
+        input.iter().map(|i| {
+            self.decrypt(i)
+        }).collect()
+    }
+
+    pub fn decrypt_sequence_to_string(&self, input: &[BigUint]) -> Result<String, Box<dyn Error>> {
+        input.iter().map(|i| {
+            Ok(self.decrypt(i)? as char)
+        }).collect()
+    }
+
 
     pub fn save_to_file(&self, mut file: File) -> Result<(), Box<dyn Error>> {
         let data = format!("{}\n{}\n{}", self.exponent, self.modulus, self.salt_bits);
@@ -96,6 +124,16 @@ impl Key {
             salt_bits
         })
     }
+
+    #[cfg(test)]
+    pub fn get_exponent(&self) -> BigUint {
+        self.exponent.clone()
+    }
+
+    #[cfg(test)]
+    pub fn get_modulus(&self) -> BigUint {
+        self.modulus.clone()
+    }
 }
 
 impl KeySet {
@@ -116,7 +154,7 @@ impl KeySet {
             public_key: Key::new(e, n.clone(), salt_bits),
             phi,
             primes: (p, q),
-            bit_length: 0
+            bit_length
         }
     }
 
@@ -147,6 +185,16 @@ impl KeySet {
     #[cfg(test)]
     pub fn get_private_key(&self) -> Key {
         self.private_key.clone()
+    }
+
+    #[cfg(test)]
+    pub fn get_phi(&self) -> BigUint {
+        self.phi.clone()
+    }
+
+    #[cfg(test)]
+    pub fn get_primes(&self) -> (BigUint, BigUint) {
+        self.primes.clone()
     }
 
     pub fn keypair_exists(name: &str) -> Result<bool, Box<dyn Error>> {
