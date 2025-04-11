@@ -202,6 +202,7 @@ dependencies = [
  "rayon",
  "serial_test",
  "test-log",
+ "thiserror",
 ]
 
 [[package]]

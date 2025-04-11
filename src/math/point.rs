@@ -3,6 +3,9 @@ use num::BigInt;
 use num::Signed;
 use num::BigUint;
 use more_asserts as ma;
+use std::str::FromStr;
+use std::fmt;
+use std::error::Error;
 
 use super::modular_inverse;
 
@@ -56,5 +59,45 @@ impl Point {
             result = Self::point_addition(&result, rhs, q, a);
         }
         result
+    }
+
+    pub fn negative(&self) -> Self {
+        Self {
+            x: self.x.clone(),
+            y: -self.y.clone()
+        }
+    }
+}
+
+impl fmt::Display for Point {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "({}, {})", self.x, self.y)
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, thiserror::Error)]
+#[error("Unable to parse point")]
+struct ParsePointError;
+
+impl FromStr for Point {
+    type Err = ParsePointError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let (x, y) = s
+            .strip_prefix("(")
+            .and_then(|s| {
+                s.strip_suffix(")")
+            })
+            .and_then(|s| {
+                s.split_once(", ")
+            }).ok_or(ParsePointError)?;
+
+        let x = x.parse::<BigInt>().map_err(|_| ParsePointError)?;
+        let y = y.parse::<BigInt>().map_err(|_| ParsePointError)?;
+
+        Ok(Point {
+            x,
+            y
+        })
     }
 }

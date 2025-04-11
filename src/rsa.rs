@@ -28,8 +28,8 @@ pub struct KeySet {
 }
 
 impl Key {
-    pub fn new(exponent: BigUint, modulus: BigUint, salt_bits: u32) -> Key {
-        Key {
+    pub fn new(exponent: BigUint, modulus: BigUint, salt_bits: u32) -> Self {
+        Self {
             exponent,
             modulus,
             salt_bits
@@ -44,8 +44,7 @@ impl Key {
         trace!("Input: {:b}", &input);
         let input = (input << self.salt_bits) | salt;
         trace!("Salted value: {:b}", &input);
-        // modular_pow(&input, &self.exponent, &self.modulus)
-        input.modpow(&self.exponent, &self.modulus)
+        modular_pow(&input, &self.exponent, &self.modulus)
     }
 
     pub fn encrypt_sequence(&self, rng: &mut ThreadRng, input: &[u8]) -> Vec<BigUint> {
@@ -62,8 +61,7 @@ impl Key {
 
     pub fn decrypt(&self, input: &BigUint) -> Result<u8, Box<dyn Error>> {
         trace!("Running decrypt: {}", input);
-        // let decrypted = modular_pow(input, &self.exponent, &self.modulus);
-        let decrypted = input.modpow(&self.exponent, &self.modulus);
+        let decrypted = modular_pow(input, &self.exponent, &self.modulus);
         trace!("Salted decrypted: {}", &decrypted);
         let desalted = (&decrypted >> self.salt_bits).to_u8();
         match desalted {
@@ -97,12 +95,13 @@ impl Key {
     }
 
     pub fn load_public_key(name: &str) -> Result<Self, Box<dyn Error>> {
-        let name = format!("{}.pub", name);
+        let name = format!("{}.rsa.pub", name);
         Self::load_key(&name)
     }
 
     pub fn load_private_key(name: &str) -> Result<Self, Box<dyn Error>> {
-       Self::load_key(name)
+        let name = format!("{}.rsa", name);
+       Self::load_key(&name)
     }
 
     fn load_key(name: &str) -> Result<Self, Box<dyn Error>> {
@@ -138,7 +137,7 @@ impl Key {
 
 impl KeySet {
     pub fn new(salt_bits: u32, bit_length: u64) -> Self {
-        info!("Generating new keyset");
+        info!("Generating new RSA keyset");
         let prime_bit_length = bit_length / 2;
         let p = new_prime(prime_bit_length);
         let q = new_prime(prime_bit_length);
@@ -149,7 +148,7 @@ impl KeySet {
             &e.to_bigint().unwrap(),
             &phi.to_bigint().unwrap()
             );
-        KeySet {
+        Self {
             private_key: Key::new(d, n.clone(), salt_bits),
             public_key: Key::new(e, n.clone(), salt_bits),
             phi,
@@ -159,11 +158,11 @@ impl KeySet {
     }
 
     pub fn save_keys(&self, name: &str) -> Result<(), Box<dyn Error>> {
-        info!("Saving keyset {}", name);
+        info!("Saving RSA keyset {}", name);
         let key_root = Self::get_key_root()?;
-        let public_file = File::create(key_root.join(format!("{}.pub", name)))?;
+        let public_file = File::create(key_root.join(format!("{}.rsa.pub", name)))?;
         self.public_key.save_to_file(public_file)?;
-        let private_file = File::create(key_root.join(name))?;
+        let private_file = File::create(key_root.join(format!("{}.rsa", name)))?;
         self.private_key.save_to_file(private_file)?;
         Ok(())
     }
@@ -199,7 +198,8 @@ impl KeySet {
 
     pub fn keypair_exists(name: &str) -> Result<bool, Box<dyn Error>> {
         let key_root = KeySet::get_key_root()?;
-        let private_file_name = key_root.join(name);
+        let name = format!("{}.rsa", name);
+        let private_file_name = key_root.join(name.clone());
         let name = format!("{}.pub", name);
         let public_file_name = key_root.join(name);
         // WARN: error prone
