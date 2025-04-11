@@ -14,6 +14,9 @@ use rand::prelude::ThreadRng;
 use rand::Rng;
 use num::Signed;
 
+const UPPER_BOUND: usize = 64;
+const Y_BIT_SIZE: u64 = 256;
+
 #[derive(Debug, PartialEq, Clone, Eq)]
 pub struct PublicKey {
     generator: Point,
@@ -57,12 +60,19 @@ impl PrivateKey {
             .negative();
         let decrypted = Point::point_addition(
             input,
-            halfmask,
+            &fullmask,
             &self.modulus,
             &self.a
         );
         trace!("Decrypted: {}", &decrypted);
         Ok(decrypted)
+    }
+
+    pub fn decrypt_sequence_to_string(&self, input: &[(Point, Point)]) -> Result<String, Box<dyn Error>> {
+        input.iter().map(|i| {
+            // TODO: add proper error handling
+            Ok(self.decrypt(&i.0, &i.1)?.x().to_u8().unwrap() as char)
+        }).collect()
     }
 
     pub fn save_to_file(&self, mut file: File) -> Result<(), Box<dyn Error>> {
@@ -120,6 +130,25 @@ impl PublicKey {
         Ok(file.write_all(data.as_bytes())?)
     }
 
+    pub fn encrypt(&self, rng: &mut ThreadRng, input: &Point) -> (Point, Point) {
+        trace!("Running enrypt: {}", input);
+        let m = rng.gen_range(2..UPPER_BOUND);
+        let halfmask = Point::point_multiplication(m, &self.generator, &self.modulus, &self.a);
+        let fullmask = Point::point_multiplication(m, &self.public_point, &self.modulus, &self.a);
+        let ciphertext = Point::point_addition(input, &fullmask, &self.modulus, &self.a);
+        (ciphertext, halfmask)
+    }
+
+    pub fn encrypt_string(&self, rng: &mut ThreadRng, input: &str) -> Vec<(Point, Point)> {
+        input.chars().map(|i| {
+            let point = Point::new(
+                BigInt::from(i as u8),
+                rng.gen_bigint(Y_BIT_SIZE)
+            );
+            self.encrypt(rng, &point)
+        }).collect()
+    }
+
     pub fn load_key(name: &str) -> Result<Self, Box<dyn Error>> {
         let name = format!("{}.elg.pub", name);
         info!("Loading Key: {}", name);
@@ -130,7 +159,7 @@ impl PublicKey {
             .lines()
             .map(String::from)
             .collect();
-        assert_eq!(lines.len(), 3);
+        assert_eq!(lines.len(), 5);
         let generator = lines[0].parse::<Point>()?;
         let public_point = lines[1].parse::<Point>()?;
         let modulus = lines[2].parse::<BigUint>()?;
@@ -174,9 +203,11 @@ impl KeySet {
                 break
             }
         }
-        let multiplier = rng.gen();
-        let generator_x = rng.gen_bigint(bit_length);
-        let generator_y = rng.gen_bigint(bit_length);
+        let multiplier = rng.gen_range(2..UPPER_BOUND);
+        // let generator_x = rng.gen_bigint(bit_length);
+        // let generator_y = rng.gen_bigint(bit_length);
+        let generator_x = BigInt::ZERO;
+        let generator_y = b.clone();
         let generator = Point::new(generator_x, generator_y);
         let public_point = Point::point_multiplication(
             multiplier,

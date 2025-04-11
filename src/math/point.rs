@@ -67,6 +67,10 @@ impl Point {
             y: -self.y.clone()
         }
     }
+
+    pub fn x(&self) -> &BigInt {
+        &self.x
+    }
 }
 
 impl fmt::Display for Point {
@@ -77,7 +81,7 @@ impl fmt::Display for Point {
 
 #[derive(Debug, PartialEq, Eq, thiserror::Error)]
 #[error("Unable to parse point")]
-struct ParsePointError;
+pub struct ParsePointError;
 
 impl FromStr for Point {
     type Err = ParsePointError;
