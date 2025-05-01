@@ -14,8 +14,8 @@ use rand::prelude::ThreadRng;
 use rand::Rng;
 use num::Signed;
 
-const UPPER_BOUND: usize = 64;
-const Y_BIT_SIZE: u64 = 256;
+const UPPER_BOUND: usize = 32;
+const Y_BIT_SIZE: u64 = 64;
 
 #[derive(Debug, PartialEq, Clone, Eq)]
 pub struct PublicKey {

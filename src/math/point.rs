@@ -1,5 +1,5 @@
 use num::bigint::ToBigInt;
-use num::BigInt;
+use num::{BigInt, Integer};
 use num::Signed;
 use num::BigUint;
 use more_asserts as ma;
@@ -54,11 +54,41 @@ impl Point {
     }
 
     pub fn point_multiplication(lhs: usize, rhs: &Point, q: &BigUint, a: &BigInt) -> Self {
-        let mut result = rhs.clone();
-        for _ in 0..(lhs - 1) {
-            result = Self::point_addition(&result, rhs, q, a);
+        if lhs == 0 {
+            panic!("Unable to multiply by 0")
         }
-        result
+        else if lhs == 1 {
+            rhs.clone()
+        }
+        else if lhs == 2 {
+            Self::point_addition(rhs, rhs, q, a)
+        }
+        else if lhs.is_even() {
+            Self::point_multiplication(
+                2,
+                &Self::point_multiplication(lhs / 2, rhs, q, a),
+                q,
+                a
+            )
+            // let mut result = rhs.clone();
+            // for _ in 0..(lhs / 2) {
+            //     result = Self::point_addition(&result, &result, q, a);
+            // }
+            // result
+        }
+        else {
+            Self::point_addition(
+                rhs,
+                &Self::point_multiplication(lhs - 1, rhs, q, a),
+                q,
+                a
+            )
+            // let mut result = rhs.clone();
+            // for _ in 0..(lhs / 2) {
+            //     result = Self::point_addition(&result, &result, q, a);
+            // }
+            // Self::point_addition(&result, rhs, q, a)
+        }
     }
 
     pub fn negative(&self) -> Self {

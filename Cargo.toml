@@ -9,6 +9,7 @@ repository = "https://github.com/Akari202/encrypted-socket-chat"
 num = { version = "0.4.3", features = ["rand", "num-bigint"] }
 dirs = "6.0.0"
 log = "0.4.25"
+aes = "0.8.4"
 rand = "0.8.5"
 clap = { version = "4.5.29", features = ["derive"] }
 clap-verbosity-flag = "3.0.2"

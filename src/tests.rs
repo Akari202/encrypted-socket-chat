@@ -16,7 +16,7 @@ mod elg {
 
     const INPUT: &str = "./src/elgamal.rs";
     const KEY_NAME: &str = "test_keys";
-    const BIT_LENGTH: u64 = 128;
+    const BIT_LENGTH: u64 = 64;
 
 #[cfg(test)]
     fn make_or_get_key() {

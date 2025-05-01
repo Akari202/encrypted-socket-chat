@@ -50,6 +50,7 @@ fn fermat(rng: &mut ThreadRng, number: &BigUint) -> bool {
 }
 
 // Returns false if not prime
+// Actually i think returns true if not prime
 fn miller_rabin(rng: &mut ThreadRng, number: &BigUint, rounds: usize) -> bool {
     let one_under = number - &BigUint::from(1u8);
     let mut s = 0;
