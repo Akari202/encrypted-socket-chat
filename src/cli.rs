@@ -18,8 +18,14 @@ use crate::math::point::{ParsePointError, Point};
 use clap::builder::TypedValueParser;
 use num::bigint::ParseBigIntError;
 use std::string::String;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use crossterm::cursor::MoveToColumn;
+use crossterm::event::{Event, KeyCode};
+use crossterm::execute;
 use rand::{random, thread_rng, Rng};
 use rayon::iter::split;
+use crossterm::terminal::{disable_raw_mode, enable_raw_mode, Clear, ClearType};
 
 const EXCHANGE_HEADER: &str = "[[ESC AES Exchange:]]";
 const EXCHANGE_LENGTH: u8 = 2;
@@ -78,7 +84,8 @@ pub enum ChatDirection {
     },
     Host {
         /// The secret passphrase to use for AES encryption
-        #[arg(short, long)]
+        /// Required becuase sometimes bad things are generated
+        #[arg(short, long, required = true)]
         secret_phrase: Option<String>,
         /// Public key name to use for encryption
         #[arg(short, long, required = true)]
@@ -200,26 +207,11 @@ impl Commands {
                                 key.decrypt_sequence_to_string(&encrypted)?
                             }
                         };
-                        info!("Decrypted secret phrase: {}", &secret_phrase);
+                        info!("Decrypted secret phrase: {:?}", &secret_phrase);
                         let aes_cipher = build_aes_key(&secret_phrase)?;
                         info!("Ready to talk!");
 
-                        message(&aes_cipher, stream)?;
-
-                        // let end_idk = [10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-                        // loop {
-                        //     let mut test_buffer = [0u8; 16];
-                        //     stream.read(&mut test_buffer)?;
-                        //     if test_buffer == [0u8; 16] || test_buffer == end_idk {
-                        //         debug!("Final buffer: {:?}", &test_buffer);
-                        //         stream.peek(&mut test_buffer)?;
-                        //         debug!("Peek: {:?}", &test_buffer);
-                        //         break;
-                        //     }
-                        //     trace!("Test buffer: {:?}", &test_buffer);
-                        //
-                        //     print!("{}", decrypt_aes_block(&test_buffer, &aes_cipher)?);
-                        // }
+                        message(Arc::new(aes_cipher), stream)?;
                     }
                     ChatDirection::Host {
                         secret_phrase,
@@ -268,14 +260,14 @@ impl Commands {
                         info!("Ready to talk!");
 
                         // let test_string = include_str!("cli.rs");
-                        let test_string = "Hello World!";
-                        trace!("Test string: {}", test_string);
-                        let test_string = encrypt_aes_string(test_string, &aes_cipher)?;
-                        trace!("Test string: {:?}", test_string);
-                        stream.write(&test_string)?;
-                        stream.write("\n".as_bytes())?;
+                        // let test_string = "Hello World!";
+                        // trace!("Test string: {}", test_string);
+                        // let test_string = encrypt_aes_string(test_string, &aes_cipher)?;
+                        // trace!("Test string: {:?}", test_string);
+                        // stream.write(&test_string)?;
+                        // stream.write("\n".as_bytes())?;
 
-                        message(&aes_cipher, stream)?;
+                        message(Arc::new(aes_cipher), stream)?;
                     }
                 }
                 Ok(())
@@ -393,26 +385,145 @@ fn decrypt_aes_block(input: &[u8; 16], cipher: &Aes128) -> Result<String, Box<dy
     )
 }
 
-fn message(cipher: &Aes128, mut stream: UnixStream) -> Result<(), Box<dyn Error>> {
-    let mut stream = BufReader::new(stream);
-    let empty_line: [u8; 16] = [10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
-    let mut block_buffer = [0u8; 16];
-    let mut stdin = io::stdin();
-    loop {
-        trace!("Start of loop");
-        // stream.peek(&mut block_buffer)?;
-        stream.read(&mut block_buffer)?;
-        if block_buffer != [0u8; 16] {
-            trace!("Decrypting...");
-            // stream.read(&mut block_buffer)?;
-            let decrypted = decrypt_aes_block(&block_buffer, cipher)?;
-            print!("{}", decrypted);
+fn message(cipher: Arc<Aes128>, stream: UnixStream) -> Result<(), Box<dyn Error>> {
+    enable_raw_mode()?;
+
+    let running = Arc::new(AtomicBool::new(true));
+    let running_clone = Arc::clone(&running);
+
+    ctrlc::set_handler(move || {
+        running_clone.store(false, Ordering::SeqCst);
+    })?;
+
+    let mut read_stream = BufReader::new(stream.try_clone()?);
+    let mut write_stream = stream;
+
+    let cipher_clone = Arc::clone(&cipher);
+    let running_clone = Arc::clone(&running);
+
+    let read_thread = thread::spawn(move || {
+        let mut block_buffer = [0u8; 16];
+        while running.load(Ordering::SeqCst) {
+            if let Ok(_) = read_stream.read_exact(&mut block_buffer) {
+                if block_buffer != [0u8; 16] {
+                    debug!("Encrypted block read: {:?}", &block_buffer);
+                    let decrypted = decrypt_aes_block(&block_buffer, &cipher_clone)
+                        .expect("Decryption failed");
+                    println!("\rThem: {}", decrypted.trim());
+                }
+            }
         }
+    });
+
+    let cipher_clone = Arc::clone(&cipher);
+
+    let write_thread = thread::spawn(move || {
         let mut input_buffer = String::new();
-        stdin.read_line(&mut input_buffer)?;
-        debug!("Stdin: {:?}", &input_buffer);
-        let encrypted_input = encrypt_aes_string(&input_buffer, cipher)?;
-        let _ = stream.write(&encrypted_input);
-        trace!("Loop! {:?} {:?}", block_buffer, input_buffer);
-    }
+        let mut stdout = io::stdout();
+
+        while running_clone.load(Ordering::SeqCst) {
+            if let Event::Key(event) = crossterm::event::read().expect("Failed to read terminal event") {
+                match event.code {
+                    KeyCode::Enter => {
+                        if !input_buffer.is_empty() {
+                            let encrypted_input = encrypt_aes_string(
+                                &input_buffer,
+                                &cipher_clone
+                            )
+                            .expect("Encryption failed");
+
+                            debug!("Encrypted block to send: {:?}", &encrypted_input);
+
+                            write_stream
+                                .write_all(&encrypted_input)
+                                .expect("Failed to write to stream");
+
+                            println!("\rYou: {}", input_buffer);
+
+                            input_buffer.clear();
+                        }
+                    }
+                    KeyCode::Backspace => {
+                        if !input_buffer.is_empty() {
+                            input_buffer.pop();
+                            execute!(stdout, MoveToColumn(0), Clear(ClearType::CurrentLine))
+                                .expect("Failed to clear line");
+                            print!("\r{}", input_buffer);
+                            stdout.flush().expect("Failed to flush stdout");
+                        }
+                    }
+                    KeyCode::Char(c) => {
+                        input_buffer.push(c);
+                        print!("{}", c);
+                        stdout.flush().expect("Failed to flush stdout");
+                    }
+                    KeyCode::Esc => {
+                        running_clone.store(false, Ordering::SeqCst);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
+    });
+
+    read_thread.join().expect("Read thread panicked");
+    write_thread.join().expect("Write thread panicked");
+
+    disable_raw_mode()?;
+
+    println!("\nProgram exited gracefully.");
+    Ok(())
 }
+
+
+// fn message(cipher: Arc<Aes128>, stream: UnixStream) -> Result<(), Box<dyn Error>> {
+//     enable_raw_mode()?;
+//
+//     let mut read_stream = BufReader::new(stream.try_clone()?);
+//     let write_stream = stream;
+//
+//     let cipher_clone = Arc::clone(&cipher);
+//     let read_thread = thread::spawn(move || {
+//         let mut block_buffer = [0u8; 16];
+//         loop {
+//             if let Ok(_) = read_stream.read_exact(&mut block_buffer) {
+//                 if block_buffer != [0u8; 16] {
+//                     debug!("Encrypted block read: {:?}", &block_buffer);
+//                     let decrypted = decrypt_aes_block(&block_buffer, &cipher_clone)
+//                         .expect("Decryption failed");
+//                     println!("{}", decrypted.trim());
+//                 }
+//             }
+//         }
+//     });
+//
+//     let cipher_clone = Arc::clone(&cipher);
+//     let write_thread = thread::spawn(move || {
+//         let mut stdin = io::stdin();
+//         let mut write_stream = write_stream;
+//         loop {
+//             let mut input_buffer = String::new();
+//             if stdin.read_line(&mut input_buffer).is_ok() {
+//                 let encrypted_input =
+//                     encrypt_aes_string(&format!("Them: {}", input_buffer), &cipher_clone)
+//                         .expect("Encryption failed");
+//                 debug!("Encrypted block to send: {:?}", &encrypted_input);
+//                 write_stream
+//                     .write_all(&encrypted_input)
+//                     .expect("Failed to write to stream");
+//                 print!("You: {}", input_buffer);
+//             }
+//         }
+//     });
+//
+//     // Wait for both threads to finish
+//     read_thread.join().expect("Read thread panicked");
+//     write_thread.join().expect("Write thread panicked");
+//
+//     disable_raw_mode()?;
+//
+//     Ok(())
+// }
+
+

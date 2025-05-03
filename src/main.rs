@@ -19,6 +19,7 @@ use std::os::unix::net::UnixListener;
 use std::thread;
 use clap::builder::TypedValueParser;
 use clap::Parser;
+use crossterm::terminal::disable_raw_mode;
 use num::BigInt;
 use crate::cli::Cli;
 use crate::math::xgcd;
