@@ -1,22 +1,24 @@
 use std::error::Error;
-use std::{fs, thread};
+use std::{fs, io, thread};
 use std::fmt::Formatter;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixListener;
+use std::io::{stdin, BufRead, BufReader, Read, Stdin, Write};
+use std::os::unix::net::{UnixListener, UnixStream};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::path::PathBuf;
 use std::time::Instant;
 use aes::Aes128;
-use aes::cipher::KeyInit;
-use log::{info, trace};
+use aes::cipher::{BlockDecrypt, BlockEncrypt, KeyInit, KeySizeUser};
+use aes::cipher::generic_array::GenericArray;
+use log::{debug, info, trace};
 use num::BigUint;
 use rayon::prelude::*;
 use crate::{elgamal, rsa};
 use crate::math::point::{ParsePointError, Point};
-use std::string::String;
 use clap::builder::TypedValueParser;
 use num::bigint::ParseBigIntError;
+use std::string::String;
+use rand::{random, thread_rng, Rng};
 use rayon::iter::split;
 
 const EXCHANGE_HEADER: &str = "[[ESC AES Exchange:]]";
@@ -76,8 +78,8 @@ pub enum ChatDirection {
     },
     Host {
         /// The secret passphrase to use for AES encryption
-        #[arg(short, long, required = true)]
-        secret_phrase: String,
+        #[arg(short, long)]
+        secret_phrase: Option<String>,
         /// Public key name to use for encryption
         #[arg(short, long, required = true)]
         public_key_name: String,
@@ -141,106 +143,276 @@ impl Commands {
                 } else {
                     socket.clone().unwrap().to_path_buf()
                 };
-                if fs::metadata(&socket_path).is_ok() {
-                    info!("A socket is already present. Deleting...");
-                    fs::remove_file(&socket_path)?;
-                }
-                let listener = UnixListener::bind(&socket_path)?;
-                let aes_cipher: Aes128;
                 match chat_direction {
                     ChatDirection::Join {
                         private_key_name
                     } => {
-                        let aes_exchange = watch_for_header(listener)?;
-                        let aes_decrypted = match encryption_scheme {
+                        let mut stream = UnixStream::connect(socket_path)?;
+                        let mut buf_reader = BufReader::new(stream.try_clone()?);
+                        let mut header = false;
+                        let mut encrypted = String::new();
+                        for line in buf_reader.lines() {
+                            let line = line.unwrap();
+                            trace!("Reading: {}", line.clone());
+                            if header {
+                                encrypted = line;
+                                break;
+                            }
+                            if line.clone() == EXCHANGE_HEADER {
+                                header = true;
+                            }
+                        }
+                        if encrypted.is_empty() {
+                            return Err("Header not found".into())
+                        }
+                        debug!("Encrypted secret phrase: {}", encrypted);
+                        let secret_phrase = match encryption_scheme {
                             Scheme::Rsa => {
                                 let key = rsa::Key::load_private_key(private_key_name)?;
-                                key.decrypt_sequence(
-                                    &aes_exchange
-                                        .split(",")
-                                        .map(|i| {
-                                            i.parse::<BigUint>()
-                                        })
-                                        .collect::<Result<Vec<_>, _>>()?
-                                )?
-                                    .iter()
+                                let encrypted = encrypted
+                                    .split("|")
                                     .map(|i| {
-                                        *i as char
+                                        i.parse::<BigUint>()
                                     })
-                                    .collect::<String>()
+                                    .collect::<Result<Vec<BigUint>, _>>()?;
+                                key.decrypt_sequence_to_string(&encrypted)?
                             }
                             Scheme::Elgamal => {
                                 let key = elgamal::PrivateKey::load_key(private_key_name)?;
-                                let all_points = aes_exchange
+                                let encrypted = encrypted
                                     .split("|")
                                     .map(|i| {
-                                        i.parse::<Point>()
+                                        let points = i.split("%")
+                                            .map(|j| {
+                                                j.parse::<Point>()
+                                            })
+                                            .collect::<Result<Vec<Point>, _>>();
+                                        match points {
+                                            Ok(points) => {
+                                                Ok((points[0].clone(), points[1].clone()))
+                                            }
+                                            Err(error) => {
+                                                Err(error)
+                                            }
+                                        }
                                     })
                                     .collect::<Result<Vec<_>, _>>()?;
-                                let mut all_points = all_points.iter();
-                                let point_pairs = (0usize..=(all_points.len() / 2))
-                                    .map(|_| {
-                                        (all_points.next().unwrap().clone(), all_points.next().unwrap().clone())
-                                    })
-                                    .collect::<Vec<_>>();
-                                key.decrypt_sequence_to_string(&point_pairs)?
+                                key.decrypt_sequence_to_string(&encrypted)?
                             }
                         };
-                        let secret_phrase = aes_decrypted
-                            .chars()
-                            .map(|i| {
-                                i as u8
-                            })
-                            .collect::<Vec<u8>>();
-                        dbg!(aes_exchange);
-                        dbg!(aes_decrypted);
-                        aes_cipher = Aes128::new_from_slice(&secret_phrase).unwrap();
+                        info!("Decrypted secret phrase: {}", &secret_phrase);
+                        let aes_cipher = build_aes_key(&secret_phrase)?;
+                        info!("Ready to talk!");
+
+                        message(&aes_cipher, stream)?;
+
+                        // let end_idk = [10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+                        // loop {
+                        //     let mut test_buffer = [0u8; 16];
+                        //     stream.read(&mut test_buffer)?;
+                        //     if test_buffer == [0u8; 16] || test_buffer == end_idk {
+                        //         debug!("Final buffer: {:?}", &test_buffer);
+                        //         stream.peek(&mut test_buffer)?;
+                        //         debug!("Peek: {:?}", &test_buffer);
+                        //         break;
+                        //     }
+                        //     trace!("Test buffer: {:?}", &test_buffer);
+                        //
+                        //     print!("{}", decrypt_aes_block(&test_buffer, &aes_cipher)?);
+                        // }
                     }
                     ChatDirection::Host {
                         secret_phrase,
                         public_key_name
                     } => {
-                        let secret_phrase = secret_phrase
-                            .chars()
-                            .map(|i| {
-                                i as u8
-                            })
-                            .collect::<Vec<u8>>();
-                        aes_cipher = Aes128::new_from_slice(&secret_phrase).unwrap();
+                        let (aes_cipher, secret_phrase) = generate_aes_key(secret_phrase)?;
+                        debug!("AES Cipher: {:?} and secret phrase {}", aes_cipher, secret_phrase);
+                        if fs::metadata(&socket_path).is_ok() {
+                            info!("A socket is already present. Deleting...");
+                            fs::remove_file(&socket_path)?;
+                        }
+                        let listener = UnixListener::bind(&socket_path)?;
+                        info!("Socket listener created");
+                        let (mut stream, address) = listener.accept()?;
+                        info!("Connection accepted: {:?}", address);
+                        stream.write(EXCHANGE_HEADER.as_bytes())?;
+                        stream.write("\n".as_bytes())?;
+                        let mut rng = thread_rng();
+                        let encrypted_phrase = match encryption_scheme {
+                            Scheme::Rsa => {
+                                let key = rsa::Key::load_public_key(public_key_name)?;
+                                let encrypted = key.encrypt_string(&mut rng, &secret_phrase);
+                                encrypted
+                                    .iter()
+                                    .map(|i| {
+                                        format!("{}", i)
+                                    })
+                                    .collect::<Vec<String>>()
+                                    .join("|")
+                            }
+                            Scheme::Elgamal => {
+                                let key = elgamal::PublicKey::load_key(public_key_name)?;
+                                let encrypted = key.encrypt_string(&mut rng, &secret_phrase);
+                                encrypted
+                                    .iter()
+                                    .map(|i| {
+                                        format!("{}%{}", i.0, i.1)
+                                    })
+                                    .collect::<Vec<String>>()
+                                    .join("|")
+                            }
+                        };
+                        info!("Writing encrypted secret phrase");
+                        stream.write(encrypted_phrase.as_bytes())?;
+                        stream.write("\n".as_bytes())?;
+                        info!("Ready to talk!");
 
+                        // let test_string = include_str!("cli.rs");
+                        let test_string = "Hello World!";
+                        trace!("Test string: {}", test_string);
+                        let test_string = encrypt_aes_string(test_string, &aes_cipher)?;
+                        trace!("Test string: {:?}", test_string);
+                        stream.write(&test_string)?;
+                        stream.write("\n".as_bytes())?;
+
+                        message(&aes_cipher, stream)?;
                     }
                 }
-                dbg!(aes_cipher);
                 Ok(())
             }
         }
     }
 }
 
-
-fn watch_for_header(listener: UnixListener) -> Result<String, Box<dyn Error>> {
-    let mut exchange: String = String::new();
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                let stream = BufReader::new(stream);
-                let mut header = false;
-                for line in stream.lines() {
-                    let line = line.unwrap();
-                    println!("Reading: {}", line.clone());
-                    if line.clone() == EXCHANGE_HEADER {
-                        header = true;
-                    }
-                    if header {
-                        exchange = line;
-                        break;
-                    }
-                }
-            }
-            Err(err) => {
-                println!("Error: {}", err);
-            }
+fn generate_aes_key(secret_phrase: &Option<String>) -> Result<(Aes128, String), Box<dyn Error>> {
+    let secret_phrase_word: String;
+    let secret_phrase_bytes: [u8; 16];
+    let aes_cipher: Aes128;
+    match secret_phrase {
+        None => {
+            secret_phrase_bytes = random::<[u8; 16]>();
+            secret_phrase_word = secret_phrase_bytes
+                .iter()
+                .map(|i| {
+                    *i as char
+                })
+                .collect::<String>();
+            aes_cipher = Aes128::new_from_slice(&secret_phrase_bytes).unwrap();
+        }
+        Some(secret_phrase) => {
+            secret_phrase_word = secret_phrase.to_string();
+            aes_cipher = build_aes_key(secret_phrase)?;
         }
     }
-    Err("Unable to read header".into())
+    Ok((aes_cipher, secret_phrase_word))
+}
+
+fn build_aes_key(secret_phrase: &str) -> Result<Aes128, Box<dyn Error>> {
+    let secret_phrase_bytes: [u8; 16] = secret_phrase
+        .chars()
+        .map(|i| {
+            i as u8
+        })
+        .collect::<Vec<u8>>()
+        .try_into().unwrap();
+    Ok(Aes128::new_from_slice(&secret_phrase_bytes).unwrap())
+}
+
+fn encrypt_aes_string(input: &str, cipher: &Aes128) -> Result<Vec<u8>, Box<dyn Error>> {
+    let padded = format!("{:<width$}\n", input, width = (input.len() / 16 + 1) * 16 - 1);
+    trace!("Padded: {}", padded);
+    let mut blocks = padded
+        .chars()
+        .array_chunks::<16>()
+        .map(|i| {
+            let bytes = i
+                .iter()
+                .map(|j| {
+                    *j as u8
+                })
+                .collect::<Vec<u8>>();
+            GenericArray::from_slice(&bytes).to_owned()
+        })
+        .collect::<Vec<_>>();
+    trace!("Blocks: {:?}", blocks);
+    blocks.par_iter_mut()
+        .for_each(|i| {
+            cipher.encrypt_block(i);
+        });
+    trace!("Encrypted blocks: {:?}", blocks);
+    Ok(blocks
+        .iter()
+        .flatten()
+        .map(|i| {
+            *i
+        })
+        .collect::<Vec<u8>>()
+    )
+}
+
+fn encrypt_aes(input: &[u8], cipher: &Aes128) -> Result<Vec<u8>, Box<dyn Error>> {
+    // let padded = format!("{:<width$}\n", input, width = (input.len() / 16 + 1) * 16 - 1);
+    let pad_difference = (input.len() / 16 + 1) * 16;
+    let mut padded = input.to_vec();
+    for _ in 0..pad_difference {
+        padded.push(0);
+    }
+
+    trace!("Padded: {:?}", padded);
+    let mut blocks = padded
+        .array_chunks::<16>()
+        .map(|i| {
+            GenericArray::from_slice(i).to_owned()
+        })
+        .collect::<Vec<_>>();
+    trace!("Blocks: {:?}", blocks);
+    blocks.par_iter_mut()
+        .for_each(|i| {
+            cipher.encrypt_block(i);
+        });
+    trace!("Encrypted blocks: {:?}", blocks);
+    Ok(blocks
+        .iter()
+        .flatten()
+        .map(|i| {
+            *i
+        })
+        .collect::<Vec<u8>>()
+    )
+}
+
+fn decrypt_aes_block(input: &[u8; 16], cipher: &Aes128) -> Result<String, Box<dyn Error>> {
+    let mut block = GenericArray::from_slice(input).to_owned();
+    cipher.decrypt_block(&mut block);
+    debug!("Decrypted block: {:?}", block);
+    Ok(block.iter()
+        .map(|i| {
+            *i as char
+        })
+        .collect::<String>()
+    )
+}
+
+fn message(cipher: &Aes128, mut stream: UnixStream) -> Result<(), Box<dyn Error>> {
+    let mut stream = BufReader::new(stream);
+    let empty_line: [u8; 16] = [10, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    let mut block_buffer = [0u8; 16];
+    let mut stdin = io::stdin();
+    loop {
+        trace!("Start of loop");
+        // stream.peek(&mut block_buffer)?;
+        stream.read(&mut block_buffer)?;
+        if block_buffer != [0u8; 16] {
+            trace!("Decrypting...");
+            // stream.read(&mut block_buffer)?;
+            let decrypted = decrypt_aes_block(&block_buffer, cipher)?;
+            print!("{}", decrypted);
+        }
+        let mut input_buffer = String::new();
+        stdin.read_line(&mut input_buffer)?;
+        debug!("Stdin: {:?}", &input_buffer);
+        let encrypted_input = encrypt_aes_string(&input_buffer, cipher)?;
+        let _ = stream.write(&encrypted_input);
+        trace!("Loop! {:?} {:?}", block_buffer, input_buffer);
+    }
 }

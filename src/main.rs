@@ -1,4 +1,8 @@
+#![feature(iter_array_chunks)]
+#![feature(unix_socket_peek)]
+#![feature(array_chunks)]
 // #![feature(future_join)]
+
 #![allow(dead_code)]
 extern crate core;
 
